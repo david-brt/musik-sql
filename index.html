@@ -768,11 +768,13 @@ else if (typeof exports === 'object'){
 
   // Ergänzt erledigte Aufgaben. Einmal erreichte Aufgaben bleiben erledigt, weil spätere
   // Aufgaben ihren Datenstand wieder verändern (Style wird etwa auf Album 4 korrigiert).
-  function completedTasks(tasks, done, practice, error) {
+  // vorausgesetzt: Aufgaben, deren Ergebnis geladen wurde, ohne sie als erledigt zu zeigen.
+  function completedTasks(tasks, done, practice, error, vorausgesetzt = new Set()) {
     const next = new Set(done);
     for (const task of tasks) {
+      if (vorausgesetzt.has(task.id)) continue;
       // Löschaufgaben zählen erst, wenn der zu löschende Datensatz vorher eingetragen war.
-      if (task.nach && !next.has(task.nach)) continue;
+      if (task.nach && !next.has(task.nach) && !vorausgesetzt.has(task.nach)) continue;
       if (task.check && practice.matches(task.check)) next.add(task.id);
       if (task.blockiert && error && (error.conflicts || []).some(c =>
         c.parent === task.blockiert.parent && c.parentId === task.blockiert.id)) next.add(task.id);
@@ -833,6 +835,7 @@ else if (typeof exports === 'object'){
   let view = null;       // Vergleich für die Hervorhebung
   let refs = null;       // Verweis-Markierung: { rows: { Tabelle: Set(IDs) }, source: { table, id, column } }
   let done = new Set();
+  let teilZweiGeladen = false;   // Stand für Teil 2 geladen; Teil 1 gilt dann nicht als erledigt
   let taskId = TASKS[0].id;
 
   try {
@@ -841,16 +844,18 @@ else if (typeof exports === 'object'){
       current = practice.load(saved.state);
       sql.value = saved.sql || '';
       done = new Set(saved.done || []);
+      teilZweiGeladen = Boolean(saved.teilZweiGeladen);
       if (TASKS.some(task => task.id === saved.taskId)) taskId = saved.taskId;
     }
   } catch (error) {
     current = practice.reset();
     done = new Set();
+    teilZweiGeladen = false;
   }
 
   function save() {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ state: current, sql: sql.value, done: [...done], taskId }));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ state: current, sql: sql.value, done: [...done], teilZweiGeladen, taskId }));
     } catch (error) { /* privater Modus */ }
   }
 
@@ -861,18 +866,25 @@ else if (typeof exports === 'object'){
     return node;
   }
 
+  const TEIL_EINS = TASKS.filter(task => task.teil === 1 && !task.zusatz);
+
+  function vorausgesetzt() {
+    return new Set(teilZweiGeladen ? TEIL_EINS.map(task => task.id) : []);
+  }
+
   function teilEinsFehlt() {
-    return TASKS.some(task => task.teil === 1 && !task.zusatz && !done.has(task.id));
+    return !teilZweiGeladen && TASKS.some(task => task.teil === 1 && !task.zusatz && !done.has(task.id));
   }
 
   // Lädt den Stand nach den Pflichtaufgaben von Teil 1, damit alle Paare Teil 2 beginnen können.
   function loadPartTwo() {
     if (!confirm('Aktuelle Änderungen ersetzen und den Stand für Teil 2 laden?')) return;
     practice.reset();
-    const first = TASKS.filter(task => task.teil === 1 && !task.zusatz);
-    first.forEach(task => practice.run(task.loesung));
+    TEIL_EINS.forEach(task => practice.run(task.loesung));
     current = practice.state();
-    done = new Set(first.map(task => task.id));
+    // Nur selbst gelöste Aufgaben aus Teil 1 bleiben markiert.
+    done = new Set([...done].filter(id => TASKS.some(task => task.id === id && task.teil === 1)));
+    teilZweiGeladen = true;
     previous = previousDone = null;
     view = refs = null;
     show(['Stand für Teil 2 geladen.']);
@@ -1070,12 +1082,12 @@ else if (typeof exports === 'object'){
       current = practice.state();
       previous = before;
       previousDone = done;
-      done = completedTasks(TASKS, done, practice);
+      done = completedTasks(TASKS, done, practice, undefined, vorausgesetzt());
       view = compare(before, current);
       refs = null;
       show(steps.map(describeStep));
     } catch (error) {
-      done = completedTasks(TASKS, done, practice, error);
+      done = completedTasks(TASKS, done, practice, error, vorausgesetzt());
       view = null;
       // Bei Fremdschlüsselfehlern die beteiligten vorhandenen Zeilen markieren.
       const pairs = [];
@@ -1131,6 +1143,7 @@ else if (typeof exports === 'object'){
     current = practice.reset();
     previous = previousDone = null;
     done = new Set();
+    teilZweiGeladen = false;
     taskId = TASKS[0].id;
     view = null;
     refs = null;
