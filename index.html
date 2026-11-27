@@ -219,8 +219,15 @@ INSERT INTO Song (SongID, Titel, AlbumID) VALUES
  {
   "id": "4",
   "teil": 1,
-  "text": "Trage ein: Song 9, Yellow, Album 5. Lies die Meldung und löse das Problem.",
-  "daten": "Album 5: Parachutes, 2000, Interpret 5\nInterpret 5: Coldplay, UK",
+  "text": "Trage ein: Song 9, Yellow, Album 5.",
+  "folge": {
+   "fehlt": {
+    "parent": "Album",
+    "id": 5
+   },
+   "text": "Album 5 gibt es noch nicht. Trage zuerst Interpret 5 und Album 5 ein, danach Song 9.",
+   "daten": "Interpret 5: Coldplay, UK\nAlbum 5: Parachutes, 2000, Interpret 5"
+  },
   "loesung": "INSERT INTO Interpret (InterpretID, Name, Land) VALUES (5, 'Coldplay', 'UK');\nINSERT INTO Album (AlbumID, Titel, Erscheinungsjahr, InterpretID) VALUES (5, 'Parachutes', 2000, 5);\nINSERT INTO Song (SongID, Titel, AlbumID) VALUES (9, 'Yellow', 5);",
   "check": "SELECT 1 FROM Song s JOIN Album a ON a.AlbumID = s.AlbumID JOIN Interpret i ON i.InterpretID = a.InterpretID WHERE s.SongID = 9 AND s.Titel = 'Yellow' AND a.AlbumID = 5 AND a.Titel = 'Parachutes' AND a.Erscheinungsjahr = 2000 AND i.InterpretID = 5 AND i.Name = 'Coldplay' AND i.Land = 'UK'"
  },
@@ -782,12 +789,23 @@ else if (typeof exports === 'object'){
     return next;
   }
 
-  scope.MusikUebung = { TABLES, tablesOf, PracticeDB, compare, completedTasks, describeStep, straightenQuotes, translateError };
+  // Aufgaben mit zweitem Schritt: Er erscheint erst nach der passenden Fremdschlüsselmeldung.
+  function revealedSteps(tasks, revealed, error) {
+    const next = new Set(revealed);
+    for (const task of tasks) {
+      const fehlt = task.folge && task.folge.fehlt;
+      if (fehlt && error && (error.conflicts || []).some(c =>
+        c.parent === fehlt.parent && c.parentId === fehlt.id)) next.add(task.id);
+    }
+    return next;
+  }
+
+  scope.MusikUebung = { TABLES, tablesOf, PracticeDB, compare, completedTasks, revealedSteps, describeStep, straightenQuotes, translateError };
 })(typeof module !== 'undefined' && module.exports ? module.exports : window);
 </script>
 <script>'use strict';
 (async function () {
-  const { tablesOf, PracticeDB, compare, completedTasks, describeStep, straightenQuotes } = window.MusikUebung;
+  const { tablesOf, PracticeDB, compare, completedTasks, revealedSteps, describeStep, straightenQuotes } = window.MusikUebung;
   const STORAGE_KEY = 'musik-db-uebung-v3';
   const $ = id => document.getElementById(id);
   const sql = $('sql'), sqlHighlight = $('sql-highlight'), feedback = $('feedback');
@@ -835,6 +853,7 @@ else if (typeof exports === 'object'){
   let view = null;       // Vergleich für die Hervorhebung
   let refs = null;       // Verweis-Markierung: { rows: { Tabelle: Set(IDs) }, source: { table, id, column } }
   let done = new Set();
+  let revealed = new Set();   // Aufgaben, deren zweiter Schritt sichtbar ist
   let teilZweiGeladen = false;   // Stand für Teil 2 geladen; Teil 1 gilt dann nicht als erledigt
   let taskId = TASKS[0].id;
 
@@ -844,18 +863,20 @@ else if (typeof exports === 'object'){
       current = practice.load(saved.state);
       sql.value = saved.sql || '';
       done = new Set(saved.done || []);
+      revealed = new Set(saved.revealed || []);
       teilZweiGeladen = Boolean(saved.teilZweiGeladen);
       if (TASKS.some(task => task.id === saved.taskId)) taskId = saved.taskId;
     }
   } catch (error) {
     current = practice.reset();
     done = new Set();
+    revealed = new Set();
     teilZweiGeladen = false;
   }
 
   function save() {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ state: current, sql: sql.value, done: [...done], teilZweiGeladen, taskId }));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ state: current, sql: sql.value, done: [...done], revealed: [...revealed], teilZweiGeladen, taskId }));
     } catch (error) { /* privater Modus */ }
   }
 
@@ -913,6 +934,10 @@ else if (typeof exports === 'object'){
     const body = element('div', 'task-body');
     body.append(element('p', 'task-text', task.text));
     if (task.daten) body.append(element('pre', 'task-data', task.daten));
+    if (task.folge && (revealed.has(task.id) || done.has(task.id) || vorausgesetzt().has(task.id))) {
+      body.append(element('p', 'task-text task-step', task.folge.text));
+      if (task.folge.daten) body.append(element('pre', 'task-data', task.folge.daten));
+    }
     if (task.teil === 2 && teilEinsFehlt()) {
       const load = element('button', 'task-load', 'Stand für Teil 2 laden');
       load.type = 'button';
@@ -1088,6 +1113,7 @@ else if (typeof exports === 'object'){
       show(steps.map(describeStep));
     } catch (error) {
       done = completedTasks(TASKS, done, practice, error, vorausgesetzt());
+      revealed = revealedSteps(TASKS, revealed, error);
       view = null;
       // Bei Fremdschlüsselfehlern die beteiligten vorhandenen Zeilen markieren.
       const pairs = [];
@@ -1143,6 +1169,7 @@ else if (typeof exports === 'object'){
     current = practice.reset();
     previous = previousDone = null;
     done = new Set();
+    revealed = new Set();
     teilZweiGeladen = false;
     taskId = TASKS[0].id;
     view = null;
